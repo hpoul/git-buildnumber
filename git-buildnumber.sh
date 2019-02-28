@@ -39,6 +39,33 @@ CMD_NOTES="git notes --ref=${REFS_NOTES}"
 
 ######################
 
+function find_commit_by_buildnumber {
+    buildnumber=$1
+
+    hash=`echo "$buildnumber" | git hash-object --stdin`
+    notesfile=`git ls-tree $REFS_NOTES | grep "blob ${hash}" | cut -f 2`
+
+    test -z "$notesfile" && fail "Unable to find commit for build number ${buildnumber}"
+
+    git log "$notesfile" -1
+}
+
+case "${1:-}" in
+    "") # empty, proceed with finding next build number
+    ;;
+    find-commit)
+        test -z "$2" && fail "Usage: $0 find-commit <build number>"
+        find_commit_by_buildnumber "$2"
+        exit 0
+    ;;
+    *)
+        fail "Unknown argument ($*)"
+    ;;
+esac
+
+
+######################
+
 check_existing_buildnumber
 
 git fetch -q $REMOTE ${REFSPEC}
@@ -53,7 +80,7 @@ lastbuildnumber=`git cat-file blob ${REFS_LAST} 2>&1` || {
 buildnumber=$(( $lastbuildnumber + 1 ))
 
 buildnumberhash=`echo "${buildnumber}" | git hash-object -w --stdin`
-git update-ref -m 'creating new build' ${REFS_LAST} ${buildnumberhash}
+git update-ref -m 'buildnumber: ${buildnumber}' ${REFS_LAST} ${buildnumberhash}
 ${CMD_NOTES} add -m "${buildnumber}" HEAD
 
 git push -q $REMOTE ${REFSPEC}
