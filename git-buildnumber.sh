@@ -29,6 +29,18 @@ CMD_NOTES="git notes --ref=${REFS_NOTES}"
 ######################
 
 
+function _trap_exit {
+    rc=$1
+    lineno=$2
+    command=$3
+    if (( $rc )) ; then
+        _logf "Exiting with error ($rc) at line $lineno: $command"
+    fi
+    exit $rc
+}
+
+trap '_trap_exit $? $LINENO "$BASH_COMMAND"' EXIT
+
 function fail () {
     echo "FAIL: "
     echo "$1" >&2
@@ -88,23 +100,47 @@ function usage {
     echo "                          the current commit."
 }
 
+__red="\e[1;91m"
+__yellow="\e[33m"
+__blue="\e[34m"
+__dim="\e[2m"
+
+function __log {
+    arg=""
+    color=$1
+    level=$2
+    shift ; shift
+    while (( "$#" )) ; do
+        case "$1" in
+            -n) arg="-n" ; shift ;;
+            -bare) level="" ; shift ;;
+            *) break ;;
+        esac
+    done
+    echo $arg -e "$color  $level $*\e[0m" >&2
+}
+
 function _logt {
-    echo -e "\e[2m  TRACE $* \e[0m" >&2
+    __log $__dim TRACE "$@"
 }
 
 function _logd {
-    echo -e "\e[34m  DEBUG $* \e[0m" >&2
+    __log $__blue DEBUG "$@"
 }
 
 function _logi {
-    echo -e "\e[33m$*\e[0m" >&2
+    __log $__yellow INFO "$@"
+}
+
+function _logf {
+    __log $__red FATAL "$@"
 }
 
 function _write_buildnumber {
     buildnumber=$1
     reason=${2}
 
-    message="buildnumber: ${buildnumber} (${reason}) at commit `git show-ref -s HEAD`"
+    message="buildnumber: ${buildnumber} (${reason}) at commit `git rev-parse HEAD`"
     buildnumberhash=`echo "${buildnumber}" | git hash-object -w --stdin`
     git update-ref -m "${message}" --create-reflog ${REFS_LAST} ${buildnumberhash} `git show-ref -s refs/buildnumbers/last`
     ${CMD_NOTES} add -m "${buildnumber}" -f HEAD
@@ -131,7 +167,7 @@ function _write_buildnumber {
         fi
     fi
     _logt "buildnumber file at $buildnumberfile"
-    git show-ref -s HEAD >> $buildnumberfile
+    git rev-parse HEAD >> $buildnumberfile
     buildnumberfilehash=`git hash-object -w -- "$buildnumberfile"`
     
     _logt "Creating tree at $treefile"
@@ -145,11 +181,15 @@ function _write_buildnumber {
 }
 
 function _fetch {
+    _logt -n "Fetching from $REMOTE ...    "
     git fetch -q $REMOTE ${REFSPEC}
+    _logt -bare DONE
 }
 
 function _push {
+    _logt -n "Pushing to $REMOTE ...    "
     git push -q $REMOTE ${REFSPEC}
+    _logt -bare DONE
 }
 
 git diff-index --quiet HEAD || fail "Requires a clean repository state, without uncommited changes."
