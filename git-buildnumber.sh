@@ -14,6 +14,20 @@
 #set -xeu
 set -eu
 
+VERSION=1.0
+
+REMOTE=origin
+
+REFS_BASE=refs/buildnumbers
+REFS_LAST=${REFS_BASE}/last
+REFS_NOTES=refs/notes/buildnumbers
+REFSPEC="+${REFS_BASE}/*:${REFS_BASE}/* +refs/notes/*:refs/notes/*"
+
+CMD_NOTES="git notes --ref=${REFS_NOTES}"
+
+######################
+
+
 function fail () {
     echo "FAIL: "
     echo "$1" >&2
@@ -27,18 +41,6 @@ function check_existing_buildnumber () {
     } || :
 }
 
-REMOTE=origin
-
-#git diff-index --quiet HEAD || fail "Requires a clean repository state, without uncommited changes."
-REFS_BASE=refs/buildnumbers
-REFS_LAST=${REFS_BASE}/last
-REFS_NOTES=refs/notes/buildnumbers
-REFSPEC="+${REFS_BASE}/*:${REFS_BASE}/* +refs/notes/*:refs/notes/*"
-
-CMD_NOTES="git notes --ref=${REFS_NOTES}"
-
-######################
-
 function find_commit_by_buildnumber {
     buildnumber=$1
 
@@ -50,15 +52,61 @@ function find_commit_by_buildnumber {
     git log "$notesfile" -1
 }
 
-case "${1:-}" in
-    "") # empty, proceed with finding next build number
+function force_buildnumber {
+    buildnumber=$1
+    _write_buildnumber $buildnumber "forced"
+    echo "Written build number."
+    _push
+}
+
+function log {
+    tail `git rev-parse --git-dir`/logs/${REFS_LAST}
+}
+
+function usage {
+    echo git-buildnumber, version $VERSION
+    echo Usage: $0 [command]
+    echo "         (without command, uses 'generate')"
+    echo
+    echo Commands:
+    echo "  generate             -- The default, outputs build number for current commit"
+    echo "                          or generates a new one."
+    echo "  find-commit <number> -- Finds the commit (message) for a given build number."
+    echo "  force <number>       -- Uses the given number as the current buildnumber of"
+    echo "                          the current commit."
+}
+
+function _write_buildnumber {
+    buildnumber=$1
+    reason=${2}
+    set -x
+    buildnumberhash=`echo "${buildnumber}" | git hash-object -w --stdin`
+    git update-ref -m "buildnumber: ${buildnumber} (${reason})" --create-reflog ${REFS_LAST} ${buildnumberhash} `git show-ref -s refs/buildnumbers/last`
+    ${CMD_NOTES} add -m "${buildnumber}" -f HEAD
+}
+
+function _push {
+    git push -q $REMOTE ${REFSPEC}
+}
+
+git diff-index --quiet HEAD || fail "Requires a clean repository state, without uncommited changes."
+
+case "${1:-generate}" in
+    generate) # proceed with finding next build number
     ;;
     find-commit)
-        test -z "$2" && fail "Usage: $0 find-commit <build number>"
+        test -z "$2" && usage && fail
         find_commit_by_buildnumber "$2"
         exit 0
     ;;
+    force)
+        test -z "$2" && usage && fail
+        force_buildnumber "$2"
+        exit 0
+    ;;
+    log) log && exit 0 ;;
     *)
+        usage
         fail "Unknown argument ($*)"
     ;;
 esac
@@ -79,10 +127,8 @@ lastbuildnumber=`git cat-file blob ${REFS_LAST} 2>&1` || {
 
 buildnumber=$(( $lastbuildnumber + 1 ))
 
-buildnumberhash=`echo "${buildnumber}" | git hash-object -w --stdin`
-git update-ref -m 'buildnumber: ${buildnumber}' ${REFS_LAST} ${buildnumberhash}
-${CMD_NOTES} add -m "${buildnumber}" HEAD
+_write_buildnumber $buildnumber "increment"
 
-git push -q $REMOTE ${REFSPEC}
+_push
 
 echo ${buildnumber}
