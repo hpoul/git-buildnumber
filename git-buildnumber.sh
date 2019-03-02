@@ -100,6 +100,10 @@ function usage {
     echo "  find-commit <number> -- Finds the commit (message) for a given build number."
     echo "  force <number>       -- Uses the given number as the current buildnumber of"
     echo "                          the current commit."
+    echo "  get                  -- show the build number for the current commit (if any)"
+    echo "  sync                 -- fetch && push"
+    echo "  fetch                -- fetch all refs from remote"
+    echo "  push                 -- push all refs from remote"
 }
 
 __red="\e[1;91m"
@@ -202,6 +206,7 @@ case "${1:-generate}" in
     fetch) _fetch && exit 0 ;;
     push) _push && exit 0 ;;
     sync) _fetch && _push && exit 0 ;;
+    get) _fetch && check_existing_buildnumber && exit 0 ;;
     find | find-commit)
         test -z "$2" && usage && fail
         find_commit_by_buildnumber "$2"
