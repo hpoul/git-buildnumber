@@ -16,7 +16,9 @@ set -euE
 
 VERSION=1.0
 
-REMOTE=origin
+GIT_REMOTE=${GIT_REMOTE:-origin}
+GIT_PUSH_REMOTE=${GIT_PUSH_REMOTE:-${GIT_REMOTE}}
+GIT_FETCH_REMOTE=${GIT_FETCH_REMOTE:-${GIT_REMOTE}}
 
 REFS_BASE=refs/buildnumbers
 REFS_LAST=${REFS_BASE}/last
@@ -181,14 +183,14 @@ function _write_buildnumber {
 }
 
 function _fetch {
-    _logt -n "Fetching from $REMOTE ...    "
-    git fetch -q $REMOTE ${REFSPEC}
+    _logt -n "Fetching from ${GIT_FETCH_REMOTE} ...    "
+    git fetch -q ${GIT_FETCH_REMOTE} ${REFSPEC}
     _logt -bare DONE
 }
 
 function _push {
-    _logt -n "Pushing to $REMOTE ...    "
-    git push -q $REMOTE ${REFSPEC}
+    _logt -n "Pushing to ${GIT_PUSH_REMOTE} ...    "
+    git push -q ${GIT_PUSH_REMOTE} ${REFSPEC}
     _logt -bare DONE
 }
 
