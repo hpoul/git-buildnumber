@@ -8,7 +8,7 @@ Manages build numbers based on `refs/buildnumbers/last` and notes in `refs/notes
 # Install
 
 ```bash
-curl -O https://github.com/hpoul/git-buildnumber/raw/master/git-buildnumber.sh
+curl -O https://raw.githubusercontent.com/hpoul/git-buildnumber/v1.0/git-buildnumber.sh
 chmod +x git-buildnumber.sh
 sudo mv git-buildnumber.sh /usr/local/bin/
 ```
