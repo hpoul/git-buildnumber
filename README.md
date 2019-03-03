@@ -28,11 +28,25 @@ Run inside your git repository. It expects the master remote repository to be na
 ```bash
 # Generates a new build number for the current commit, 
 # or outputs the build number for the current commit, if it exists:
-./git-buildnumber.sh 
-
-
-# Show commit for a given build number:
-./git-buildnumber.sh find-commit 99
+./git-buildnumber.sh generate
 ```
+
+```bash
+sh>>> ./git-buildnumber.sh help
+git-buildnumber, version 1.0
+Usage: ./git-buildnumber.sh <command>
+
+Commands:
+  generate             -- The default, outputs build number for current commit
+                          or generates a new one.
+  find-commit <number> -- Finds the commit (message) for a given build number.
+  force <number>       -- Uses the given number as the current buildnumber of
+                          the current commit.
+  get                  -- show the build number for the current commit (if any)
+  sync                 -- fetch && push
+  fetch                -- fetch all refs from remote
+  push                 -- push all refs from remote
+```
+
 
 

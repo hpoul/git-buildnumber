@@ -91,8 +91,7 @@ function log {
 
 function usage {
     echo git-buildnumber, version $VERSION
-    echo Usage: $0 [command]
-    echo "         (without command, uses 'generate')"
+    echo "Usage: $0 <command>"
     echo
     echo Commands:
     echo "  generate             -- The default, outputs build number for current commit"
@@ -198,7 +197,6 @@ function _push {
     _logt -bare DONE
 }
 
-git diff-index --quiet HEAD || fail "Requires a clean repository state, without uncommited changes."
 
 case "${1:-generate}" in
     generate) # proceed with finding next build number
@@ -218,7 +216,7 @@ case "${1:-generate}" in
         exit 0
     ;;
     log) log && exit 0 ;;
-    help) usage && exit 1 ;;
+    help) usage && exit 0 ;;
     *)
         usage
         fail "Unknown argument ($*)"
@@ -227,6 +225,8 @@ esac
 
 
 ######################
+
+git diff-index --quiet HEAD || fail "Requires a clean repository state, without uncommited changes."
 
 check_existing_buildnumber
 
