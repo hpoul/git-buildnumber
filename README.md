@@ -15,11 +15,11 @@ sudo mv git-buildnumber.sh /usr/local/bin/
 
 If you just want to use it on a CI you could obviously also just run it directly to generate a new build number:
 
-`curl -s https://raw.githubusercontent.com/hpoul/git-buildnumber/master/git-buildnumber.sh | bash`
+`curl -s https://raw.githubusercontent.com/hpoul/git-buildnumber/master/git-buildnumber.sh | bash /dev/stdin generate`
 
 feel free to pin a specific version or hash 😉️
 
-`curl -s https://raw.githubusercontent.com/hpoul/git-buildnumber/v1.0/git-buildnumber.sh | bash`
+`curl -s https://raw.githubusercontent.com/hpoul/git-buildnumber/v1.0/git-buildnumber.sh | bash /dev/stdin generate`
 
 # Usage
 

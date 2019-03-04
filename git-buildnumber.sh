@@ -13,6 +13,7 @@
 
 #set -xeu
 set -euE
+set -x
 
 VERSION=1.0
 
@@ -193,6 +194,7 @@ function _fetch {
 
 function _push {
     _logt -n "Pushing to ${GIT_PUSH_REMOTE} ...    "
+    sleep 3
     git push -q ${GIT_PUSH_REMOTE} ${REFSPEC}
     _logt -bare DONE
 }
