@@ -13,7 +13,6 @@
 
 #set -xeu
 set -euE
-set -x
 
 VERSION=1.0
 
