@@ -3,6 +3,10 @@
 Create a continuous, consistent buildnumber independent of branch.
 Synchronizes with the remote `origin` repository.
 
+This is especially useful to create unique build numbers for mobile apps which are distributed in app stores, but might be built across different build servers. So you can easily use the build number as `versionCode` on android or `CFBundleVersion` on iOS. If you have a cross platform app in one repository, this makes sure that when building each version of the app (even on different build servers) they will have the same build number (if built from the same commit).
+
+Behavior: first it checks if the current git commit has a build number already assigned to it, if so this one will be used, otherwise the global build number of the repository is incremented. (this guarantees that all builds from one and the same commit, even across built variants and platforms have the same build number).
+
 Manages build numbers based on `refs/buildnumbers/last` and notes in `refs/notes/buildnumbers`.
 
 # Install
