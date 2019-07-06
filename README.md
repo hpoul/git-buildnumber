@@ -7,6 +7,15 @@ Manages build numbers based on `refs/buildnumbers/last` and notes in `refs/notes
 
 # Install
 
+## Homebrew
+
+```bash
+brew tap hpoul/tap
+brew install git-buildnumber
+```
+
+## By hand
+
 ```bash
 curl -O https://raw.githubusercontent.com/hpoul/git-buildnumber/v1.0/git-buildnumber.sh
 chmod +x git-buildnumber.sh
