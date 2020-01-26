@@ -30,6 +30,7 @@ CMD_NOTES="git notes --ref=${REFS_NOTES}"
 
 ######################
 
+IGNORE_REPOSITORY_STATE=0
 
 function _trap_exit {
     rc=$1
@@ -44,13 +45,20 @@ function _trap_exit {
 trap '_trap_exit $? $LINENO "$BASH_COMMAND"' EXIT
 
 function fail () {
-    echo "FAIL: "
-    echo "$1" >&2
+    echo "${__red}FAIL: $1" $__reset >&2
     exit 1
 }
 
+function _get_existing_buildnumber () {
+    currentbuildnumber=$(${CMD_NOTES} show  2>&1) && {
+        echo $currentbuildnumber
+        return 0
+    }
+    return $?
+}
+
 function check_existing_buildnumber () {
-    currentbuildnumber=`${CMD_NOTES} show  2>&1` && {
+    currentbuildnumber=$(_get_existing_buildnumber) && {
         echo $currentbuildnumber
         exit 0
     } || :
@@ -99,6 +107,8 @@ function usage {
     echo "  find-commit <number> -- Finds the commit (message) for a given build number."
     echo "  force <number>       -- Uses the given number as the current buildnumber of"
     echo "                          the current commit."
+    echo "  force-incr           -- Forces generation of a new build number for the "
+    echo "                          current commit."
     echo "  get                  -- show the build number for the current commit (if any)"
     echo "  sync                 -- fetch && push"
     echo "  fetch                -- fetch all refs from remote"
@@ -205,9 +215,37 @@ function _push {
     _logt -bare DONE
 }
 
+function _assert_clean_repository {
+    test $IGNORE_REPOSITORY_STATE = '1' || \
+        git diff-index --quiet HEAD || fail "Requires a clean repository state, without uncommitted changes."
+}
+
+function _generate_or_get {
+    _assert_clean_repository
+
+    buildnumber=$(_get_existing_buildnumber) && echo $buildnumber && return 0
+
+    _fetch
+
+    buildnumber=$(_get_existing_buildnumber) && echo $buildnumber && return 0
+
+    lastbuildnumber=`git cat-file blob ${REFS_LAST} 2>&1` || {
+        lastbuildnumber=0
+        echo "No buildnumber yet, starting one now."
+    }
+
+    buildnumber=$(( $lastbuildnumber + 1 ))
+
+    _write_buildnumber $buildnumber "increment"
+
+    _push
+
+    echo ${buildnumber}
+}
 
 case "${1:-generate}" in
     generate) # proceed with finding next build number
+        _generate_or_get
     ;;
     fetch) _fetch && exit 0 ;;
     push) _push && exit 0 ;;
@@ -223,6 +261,16 @@ case "${1:-generate}" in
         force_buildnumber "$2"
         exit 0
     ;;
+    force-incr)
+        _fetch
+        _assert_clean_repository
+        buildnumber=$( _generate_or_get )
+        next_buildnumber=$(( $buildnumber + 1 ))
+        _write_buildnumber $next_buildnumber "force increment"
+        _push
+        echo $next_buildnumber
+        exit 0
+    ;;
     log) log && exit 0 ;;
     help) usage && exit 0 ;;
     *)
@@ -233,24 +281,3 @@ esac
 
 
 ######################
-
-git diff-index --quiet HEAD || fail "Requires a clean repository state, without uncommited changes."
-
-check_existing_buildnumber
-
-_fetch
-
-check_existing_buildnumber
-
-lastbuildnumber=`git cat-file blob ${REFS_LAST} 2>&1` || {
-    lastbuildnumber=0
-    echo "No buildnumber yet, starting one now."
-}
-
-buildnumber=$(( $lastbuildnumber + 1 ))
-
-_write_buildnumber $buildnumber "increment"
-
-_push
-
-echo ${buildnumber}
