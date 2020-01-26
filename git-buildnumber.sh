@@ -105,10 +105,17 @@ function usage {
     echo "  push                 -- push all refs from remote"
 }
 
-__red="\e[1;91m"
-__yellow="\e[33m"
-__blue="\e[34m"
-__dim="\e[2m"
+__red="[1;91m"
+__yellow="[33m"
+__blue="[34m"
+__dim="[02m"
+__reset="[0m"
+# __red="\e[1;91m"
+# __yellow="\e[33m"
+# __blue="\e[34m"
+# __dim="\e[2m"
+# __reset="\e[0m"
+
 
 function __log {
     arg=""
@@ -122,7 +129,7 @@ function __log {
             *) break ;;
         esac
     done
-    echo $arg -e "$color  $level $*\e[0m" >&2
+    echo $arg "$color  $level $*$__reset" >&2
 }
 
 function _logt {
