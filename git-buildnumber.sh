@@ -210,7 +210,7 @@ function _fetch {
 
 function _push {
     _logt -n "Pushing to ${GIT_PUSH_REMOTE} ...    "
-    sleep 3
+    #sleep 3
     git push -q ${GIT_PUSH_REMOTE} ${REFSPEC}
     _logt -bare DONE
 }
