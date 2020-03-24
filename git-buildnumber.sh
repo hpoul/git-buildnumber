@@ -68,11 +68,17 @@ function find_commit_by_buildnumber {
     buildnumber=$1
 
     blobhash=`git ls-tree $REFS_COMMITS "b${buildnumber}" | cut -f 1 | cut -d' ' -f3`
+
+    if test -z "$blobhash" ; then
+        echo 'Unable to find buildnumber ${buildnumber} - make sure to run `fetch`'
+        exit 1
+    fi
+
     commits=`git cat-file blob $blobhash`
 
     unique=`echo "$commits" | uniq`
     
-    _logi "Found the following commits: \n$unique\n"
+    _logi "Found the following commits: $unique"
 
     git log $commits -1
 
