@@ -30,7 +30,7 @@ CMD_NOTES="git notes --ref=${REFS_NOTES}"
 
 ######################
 
-IGNORE_REPOSITORY_STATE=0
+IGNORE_REPOSITORY_STATE=${IGNORE_REPOSITORY_STATE:-0}
 
 function _trap_exit {
     rc=$1
@@ -217,8 +217,30 @@ function _fetch {
 function _push {
     _logt -n "Pushing to ${GIT_PUSH_REMOTE} ...    "
     #sleep 3
-    git push -q ${GIT_PUSH_REMOTE} ${REFSPEC}
+    git push -q ${GIT_PUSH_REMOTE} ${REFSPEC} || {
+        _logt -bare ERROR
+        if test "$1" != "nofail" ; then
+            fail "Error while pushing to remote. Exiting"
+        fi
+        _logi "Error while pushing to remote"
+        return 1
+    }
     _logt -bare DONE
+    return 0
+}
+
+function _force_incr {
+    _fetch
+    _assert_clean_repository
+    buildnumber=$( _generate_or_get )
+    next_buildnumber=$(( $buildnumber + 1 ))
+    _write_buildnumber $next_buildnumber "force increment"
+    _push nofail || {
+        _logt "Retrying..."
+        _force_incr
+        return 0
+    }
+    echo $next_buildnumber
 }
 
 function _assert_clean_repository {
@@ -237,14 +259,18 @@ function _generate_or_get {
 
     lastbuildnumber=`git cat-file blob ${REFS_LAST} 2>&1` || {
         lastbuildnumber=0
-        echo "No buildnumber yet, starting one now."
+        _logi "No buildnumber yet, starting one now."
     }
 
     buildnumber=$(( $lastbuildnumber + 1 ))
 
     _write_buildnumber $buildnumber "increment"
 
-    _push
+    _push nofail || {
+        _logt "Retrying..."
+        _generate_or_get
+        return 0
+    }
 
     echo ${buildnumber}
 }
@@ -268,13 +294,7 @@ case "${1:-generate}" in
         exit 0
     ;;
     force-incr)
-        _fetch
-        _assert_clean_repository
-        buildnumber=$( _generate_or_get )
-        next_buildnumber=$(( $buildnumber + 1 ))
-        _write_buildnumber $next_buildnumber "force increment"
-        _push
-        echo $next_buildnumber
+        _force_incr
         exit 0
     ;;
     log) log && exit 0 ;;
