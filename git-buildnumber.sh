@@ -14,6 +14,10 @@
 #set -xeu
 set -euE
 
+if test "${VERBOSE:-}" == true ; then
+  set -x
+fi
+
 VERSION=1.0
 
 GIT_REMOTE=${GIT_REMOTE:-origin}
@@ -70,7 +74,7 @@ function find_commit_by_buildnumber {
     blobhash=`git ls-tree $REFS_COMMITS "b${buildnumber}" | cut -f 1 | cut -d' ' -f3`
 
     if test -z "$blobhash" ; then
-        echo 'Unable to find buildnumber ${buildnumber} - make sure to run `fetch`'
+        echo "Unable to find buildnumber ${buildnumber} - make sure to run: $0 fetch"
         exit 1
     fi
 
@@ -80,7 +84,7 @@ function find_commit_by_buildnumber {
     
     _logi "Found the following commits: $unique"
 
-    git log $commits -1
+    _git_log $commits -1
 
     # hash=`echo "$buildnumber" | git hash-object --stdin`
     # notesfile=`git ls-tree $REFS_NOTES | grep "blob ${hash}" | cut -f 2`
@@ -100,7 +104,17 @@ function force_buildnumber {
 
 function log {
     # tail `git rev-parse --git-dir`/logs/${REFS_LAST}
-    git log ${REFS_COMMITS}
+    _git_log ${REFS_COMMITS}
+}
+
+function _git_log {
+    git_exit_code=0
+    git log $* || git_exit_code=$?;
+    if test $git_exit_code -ne 0 && test $git_exit_code -ne 141 ; then
+        exit $git_exit_code
+    else
+        _logt "git log success with $git_exit_code"
+    fi
 }
 
 function usage {
@@ -118,6 +132,8 @@ function usage {
     echo "  get                  -- show the build number for the current commit (if any)"
     echo "  sync                 -- fetch && push"
     echo "  fetch                -- fetch all refs from remote"
+    echo "  log                  -- shows the latest build numbers and corresponding "
+    echo "                          commits"
     echo "  push                 -- push all refs from remote"
 }
 
