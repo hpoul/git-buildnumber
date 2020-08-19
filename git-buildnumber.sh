@@ -202,6 +202,7 @@ function _write_buildnumber {
     if test -n "$commitshash" ; then
         parent="-p $commitshash"
         git ls-tree $commitshash | grep -v "\t${buildnumberfilename}$" > $treefile || :
+        _logt "treefile: $(cat $treefile)"
         previous=`git ls-tree $commitshash ${buildnumberfilename} | cut -f1 | cut -d' ' -f3`
         _logt "previous hash for ${buildnumberfilename} is '${previous}'"
         if test -n "$previous" ; then
