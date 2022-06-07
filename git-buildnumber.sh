@@ -35,6 +35,9 @@ CMD_NOTES="git notes --ref=${REFS_NOTES}"
 ######################
 
 IGNORE_REPOSITORY_STATE=${IGNORE_REPOSITORY_STATE:-0}
+# By default ignore changes in newline characters.
+DIFF_INDEX_ARGS=${DIFF_INDEX_ARGS:-"--ignore-space-at-eol"}
+
 
 function _trap_exit {
     rc=$1
@@ -262,7 +265,7 @@ function _force_incr {
 
 function _assert_clean_repository {
     test $IGNORE_REPOSITORY_STATE = '1' || \
-        git diff-index --quiet HEAD || fail "Requires a clean repository state, without uncommitted changes."
+        git diff-index --quiet ${DIFF_INDEX_ARGS} HEAD || fail "Requires a clean repository state, without uncommitted changes."
 }
 
 function _generate_or_get {
