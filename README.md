@@ -21,7 +21,7 @@ brew install git-buildnumber
 ## By hand
 
 ```bash
-curl -O https://raw.githubusercontent.com/hpoul/git-buildnumber/v1.0/git-buildnumber.sh
+curl -O https://raw.githubusercontent.com/hpoul/git-buildnumber/v1/git-buildnumber.sh
 chmod +x git-buildnumber.sh
 sudo mv git-buildnumber.sh /usr/local/bin/
 ```
@@ -32,7 +32,7 @@ If you just want to use it on a CI you could obviously also just run it directly
 
 feel free to pin a specific version or hash 😉️
 
-`curl -s https://raw.githubusercontent.com/hpoul/git-buildnumber/v1.0/git-buildnumber.sh | bash /dev/stdin generate`
+`curl -s https://raw.githubusercontent.com/hpoul/git-buildnumber/v1/git-buildnumber.sh | bash /dev/stdin generate`
 
 # Usage
 
