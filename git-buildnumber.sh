@@ -74,7 +74,7 @@ function check_existing_buildnumber () {
 function find_commit_by_buildnumber {
     buildnumber=$1
 
-    blobhash=`git ls-tree $REFS_COMMITS "b${buildnumber}" | cut -f 1 | cut -d' ' -f3`
+    blobhash=`git ls-tree --full-tree $REFS_COMMITS "b${buildnumber}" | cut -f 1 | cut -d' ' -f3`
 
     if test -z "$blobhash" ; then
         echo "Unable to find buildnumber ${buildnumber} - make sure to run: $0 fetch"
@@ -204,9 +204,9 @@ function _write_buildnumber {
     _logt "commitshash: $commitshash\n\n"
     if test -n "$commitshash" ; then
         parent="-p $commitshash"
-        git ls-tree $commitshash | grep -v "\t${buildnumberfilename}$" > $treefile || :
+        git ls-tree --full-tree $commitshash | grep -v "\t${buildnumberfilename}$" > $treefile || :
         _logt "treefile: $(cat $treefile)"
-        previous=`git ls-tree $commitshash ${buildnumberfilename} | cut -f1 | cut -d' ' -f3`
+        previous=`git ls-tree --full-tree $commitshash ${buildnumberfilename} | cut -f1 | cut -d' ' -f3`
         _logt "previous hash for ${buildnumberfilename} is '${previous}'"
         if test -n "$previous" ; then
             # another commit already has this build number.. but anyway..
@@ -224,7 +224,8 @@ function _write_buildnumber {
     newcommitshash=`git commit-tree $parent $treehash -m "${message}"`
     git update-ref -m "${message}" --create-reflog ${REFS_COMMITS} ${newcommitshash}
 
-    rm $treefile $buildnumberfile
+  echo "untouched $treefile and $buildnumberfile"
+#    rm $treefile $buildnumberfile
 
 }
 
