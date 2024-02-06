@@ -224,8 +224,7 @@ function _write_buildnumber {
     newcommitshash=`git commit-tree $parent $treehash -m "${message}"`
     git update-ref -m "${message}" --create-reflog ${REFS_COMMITS} ${newcommitshash}
 
-  echo "untouched $treefile and $buildnumberfile"
-#    rm $treefile $buildnumberfile
+    rm $treefile $buildnumberfile
 
 }
 
