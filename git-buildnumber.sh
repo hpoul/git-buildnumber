@@ -28,7 +28,14 @@ REFS_BASE=refs/buildnumbers
 REFS_LAST=${REFS_BASE}/last
 REFS_COMMITS=${REFS_BASE}/commits
 REFS_NOTES=refs/notes/buildnumbers
-REFSPEC="+${REFS_BASE}/*:${REFS_BASE}/* +refs/notes/*:refs/notes/*"
+# Scoped to our own notes ref on purpose. `+refs/notes/*:refs/notes/*` force-fetches
+# and force-pushes *every* notes ref, so a stale clone silently rolls back notes it
+# knows nothing about — refs/notes/commits used for review comments, for example.
+#
+# Kept as a glob rather than the exact ref because a plain refspec is fatal when
+# the ref does not exist yet: "couldn't find remote ref" on fetch, "src refspec
+# does not match any" on push. That is every first run.
+REFSPEC="+${REFS_BASE}/*:${REFS_BASE}/* +${REFS_NOTES}*:${REFS_NOTES}*"
 
 CMD_NOTES="git notes --ref=${REFS_NOTES}"
 
@@ -57,7 +64,9 @@ function fail () {
 }
 
 function _get_existing_buildnumber () {
-    currentbuildnumber=$(${CMD_NOTES} show  2>&1) && {
+    # 2>/dev/null, not 2>&1: merging stderr put any git warning inside the value,
+    # and callers feed this straight to --build-number and to app store metadata.
+    currentbuildnumber=$(${CMD_NOTES} show 2>/dev/null) && {
         echo $currentbuildnumber
         return 0
     }
@@ -239,7 +248,10 @@ function _push {
     #sleep 3
     git push -q ${GIT_PUSH_REMOTE} ${REFSPEC} || {
         _logt -bare ERROR
-        if test "$1" != "nofail" ; then
+        # ${1:-} because `set -u` is on and _push is called with no argument
+        # from push, sync and force_buildnumber — where a failing push died with
+        # "$1: unbound variable" instead of the message below.
+        if test "${1:-}" != "nofail" ; then
             fail "Error while pushing to remote. Exiting"
         fi
         _logi "Error while pushing to remote"
