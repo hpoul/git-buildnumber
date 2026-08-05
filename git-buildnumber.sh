@@ -18,7 +18,7 @@ if test "${VERBOSE:-}" == true ; then
   set -x
 fi
 
-VERSION=1.0
+VERSION=1.2
 
 GIT_REMOTE=${GIT_REMOTE:-origin}
 GIT_PUSH_REMOTE=${GIT_PUSH_REMOTE:-${GIT_REMOTE}}
