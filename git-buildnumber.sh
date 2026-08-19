@@ -66,6 +66,10 @@ FETCHED=0
 
 CMD_NOTES="git notes --ref=${REFS_NOTES}"
 
+# A literal tab, for patterns that must match `git ls-tree` output on both BSD
+# and GNU tools.
+_TAB=$(printf '\t')
+
 ######################
 
 IGNORE_REPOSITORY_STATE=${IGNORE_REPOSITORY_STATE:-0}
@@ -253,7 +257,12 @@ function _write_buildnumber {
     _logt "commitshash: $commitshash\n\n"
     if test -n "$commitshash" ; then
         parent="-p $commitshash"
-        git ls-tree --full-tree $commitshash | grep -v "\t${buildnumberfilename}$" > $treefile || :
+        # An actual tab, not "\t": BSD grep reads the escape as a tab and GNU
+        # grep's BRE does not, where it becomes a literal "t" and the filter
+        # silently matches nothing — leaving the old entry in place so `mktree`
+        # writes a tree with two entries of the same name. Only reachable when a
+        # number is rewritten (force, force-incr), and invalid to `git fsck`.
+        git ls-tree --full-tree $commitshash | grep -v "${_TAB}${buildnumberfilename}$" > $treefile || :
         _logt "treefile: $(cat $treefile)"
         previous=`git ls-tree --full-tree $commitshash ${buildnumberfilename} | cut -f1 | cut -d' ' -f3`
         _logt "previous hash for ${buildnumberfilename} is '${previous}'"
@@ -316,6 +325,7 @@ function _fetch {
     # dies "stale info", the retry re-fetches (a no-op, since the remote has
     # nothing to overwrite it with), finds the note it just wrote, and returns
     # it: exit 0, a number on stdout, and nothing published.
+    _read_remote_refs
     OBSERVED_LAST=$(_remote_ref "${REFS_LAST}")
     OBSERVED_COMMITS=$(_remote_ref "${REFS_COMMITS}")
     OBSERVED_NOTES=$(_remote_ref "${REFS_NOTES}")
@@ -323,9 +333,22 @@ function _fetch {
     _logt -bare DONE
 }
 
-# The push remote's current value for a ref, or empty when it has none.
+# What the push remote currently holds, read once for all three refs.
+#
+# **An unreachable remote must not look like an empty one.** `ls-remote` exits
+# non-zero when it cannot reach the remote and zero-with-no-output when the ref
+# simply is not there; collapsing those means a network or auth failure reads as
+# "no refs yet", which drops every lease and turns the next push into the
+# unguarded force this whole change removed.
+REMOTE_REFS=""
+function _read_remote_refs {
+    REMOTE_REFS=$(git ls-remote "${GIT_PUSH_REMOTE}" "${REFS_BASE}/*" "${REFS_NOTES}*" 2>/dev/null) || \
+        fail "Cannot read ${GIT_PUSH_REMOTE}. Refusing to push without knowing what it holds."
+    return 0
+}
+
 function _remote_ref {
-    git ls-remote "${GIT_PUSH_REMOTE}" "$1" 2>/dev/null | cut -f1 || true
+    printf '%s\n' "${REMOTE_REFS}" | awk -v ref="$1" '$2 == ref { print $1; exit }'
 }
 
 # `--force-with-lease=<ref>:<value>` for every ref we saw a value for. A ref that
@@ -368,6 +391,7 @@ function _push {
     # user asked to publish: `push` destroyed local state, published nothing and
     # exited 0. Read the remote without touching anything local instead.
     if test "${FETCHED}" -ne 1 ; then
+        _read_remote_refs
         OBSERVED_LAST=$(_remote_ref "${REFS_LAST}")
         OBSERVED_COMMITS=$(_remote_ref "${REFS_COMMITS}")
         OBSERVED_NOTES=$(_remote_ref "${REFS_NOTES}")
@@ -477,10 +501,13 @@ case "${1:-generate}" in
     ;;
     fetch) _fetch && exit 0 ;;
     push) _push && exit 0 ;;
-    sync) _fetch && _push && exit 0 ;;
+    # Push first: `_fetch` force-updates the local refs from the remote, so
+    # fetching first makes the push a no-op by construction and `sync` silently
+    # becomes `fetch`. Publish what is here, then take what is there.
+    sync) _push && _fetch && exit 0 ;;
     get) _fetch && check_existing_buildnumber && exit 0 ;;
     find | find-commit)
-        test -z "$2" && usage && fail
+        test -z "${2:-}" && { usage ; fail "find-commit needs a build number" ; }
         find_commit_by_buildnumber "$2"
         exit 0
     ;;

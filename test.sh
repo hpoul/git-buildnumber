@@ -369,6 +369,44 @@ else
       "a number was reported that nothing else in the world has"
 fi
 
+# ------------------------------------------- a run that gives up cleans up
+
+note "A run that cannot publish leaves nothing behind for the next one to trust"
+
+# The failure path used to leave the unpublished note and counter in the local
+# refs, where the next run finds its own note on attempt 1 and returns it
+# without fetching or pushing — a number nothing else in the world has.
+setup giveup a
+K="$ROOT/giveup/a"
+commit_in "$K" "a change"
+# A push remote that cannot work, so every attempt fails.
+( cd "$K" && git remote add broken "$ROOT/giveup/nowhere.git" )
+try sh -c "cd '$K' && MAX_ATTEMPTS=2 GIT_PUSH_REMOTE=broken '$GBN' generate 2>/dev/null" >/dev/null
+leftover=$( cd "$K" && git notes --ref=buildnumbers show HEAD 2>/dev/null || echo "" )
+
+if [ -z "$leftover" ]; then
+  ok "no unpublished note survives the failure"
+else
+  bad "a note saying $leftover was left behind" \
+      "the next run would return it without publishing anything"
+fi
+
+# tree validity after a number is rewritten — the tab-in-grep filter
+note "Rewriting a number leaves a valid tree"
+
+setup rewrite a
+L="$ROOT/rewrite/a"
+commit_in "$L" "a change"
+try sh -c "cd '$L' && '$GBN' generate 2>/dev/null" >/dev/null
+try sh -c "cd '$L' && '$GBN' force 1 2>/dev/null" >/dev/null
+dupes=$( cd "$L" && git ls-tree --full-tree refs/buildnumbers/commits 2>/dev/null | awk '{print $4}' | sort | uniq -d | wc -l | tr -d ' ' )
+if [ "$dupes" = "0" ]; then
+  ok "the allocation tree has no duplicate entries"
+else
+  bad "$dupes duplicated name(s) in the tree" \
+      "the old entry was not filtered out, so mktree wrote an fsck-invalid tree"
+fi
+
 # --------------------------------------------------------------------- report
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"
