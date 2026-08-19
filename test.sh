@@ -277,6 +277,39 @@ else
   bad "log produced $logok entries" "the first-parent walk broke on a pre-existing chain"
 fi
 
+# --------------------------------------------------------- push publishes work
+
+note "push publishes local work rather than discarding it"
+
+# `_push` needs something to lease against, and must not use `_fetch` to get it:
+# that force-updates the local refs from the remote, which discards the very
+# allocation being published. The symptom was silent — local state gone, nothing
+# pushed, exit 0.
+setup pub a
+P="$ROOT/pub/a"
+git init -q --bare "$ROOT/pub/elsewhere.git"
+( cd "$P" && git remote add elsewhere "$ROOT/pub/elsewhere.git" )
+commit_in "$P" "a change"
+# Allocate without origin seeing it, leaving local-only state to publish.
+try sh -c "cd '$P' && GIT_FETCH_REMOTE=elsewhere GIT_PUSH_REMOTE=elsewhere '$GBN' generate 2>/dev/null" >/dev/null
+before=$( cd "$P" && git cat-file blob refs/buildnumbers/last 2>/dev/null || echo "" )
+try sh -c "cd '$P' && '$GBN' push 2>/dev/null" >/dev/null
+after=$( cd "$P" && git cat-file blob refs/buildnumbers/last 2>/dev/null || echo "" )
+
+if [ -n "$before" ] && [ "$after" = "$before" ]; then
+  ok "local allocation survives a push (n=$after)"
+else
+  bad "local went from ${before:-<none>} to ${after:-<none>}" \
+      "push discarded the state it was asked to publish"
+fi
+
+published=$( cd "$ROOT/pub" && git --git-dir=origin.git cat-file blob refs/buildnumbers/last 2>/dev/null || echo "" )
+if [ "$published" = "$before" ]; then
+  ok "and reaches the remote (n=$published)"
+else
+  bad "origin has ${published:-<nothing>}, local had ${before:-<none>}" "push reported success without publishing"
+fi
+
 # --------------------------------------------------------------------- report
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

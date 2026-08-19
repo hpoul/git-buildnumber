@@ -347,10 +347,16 @@ function _lease_args {
 function _push {
     _logt -n "Pushing to ${GIT_PUSH_REMOTE} ...    "
     #sleep 3
-    # A push with no preceding fetch has nothing to lease against, and pushing
-    # blind is what this function exists to stop. `push` and `sync` reach here
-    # directly, so the fetch is ensured rather than assumed.
-    test "${FETCHED}" -eq 1 || _fetch
+    # A push with no preceding fetch has nothing to lease against — but it must
+    # not *fetch* to get one. `_fetch` force-updates the local refs from the
+    # remote, so calling it here would discard exactly the local allocation the
+    # user asked to publish: `push` destroyed local state, published nothing and
+    # exited 0. Read the remote without touching anything local instead.
+    if test "${FETCHED}" -ne 1 ; then
+        OBSERVED_LAST=$(_remote_ref "${REFS_LAST}")
+        OBSERVED_COMMITS=$(_remote_ref "${REFS_COMMITS}")
+        OBSERVED_NOTES=$(_remote_ref "${REFS_NOTES}")
+    fi
     # --atomic so a rejected lease on one ref cannot leave the others landed.
     # Without it a partial push publishes a counter without its note, or a note
     # without its chain entry, and the retry then has to reason about halves.
