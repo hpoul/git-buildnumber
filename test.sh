@@ -310,6 +310,65 @@ else
   bad "origin has ${published:-<nothing>}, local had ${before:-<none>}" "push reported success without publishing"
 fi
 
+# ------------------------------------------------- force-incr and the counter
+
+note "force-incr counts from the shared counter, not from HEAD's own note"
+
+# With HEAD on 1 and the counter on 3, counting from the note yields 2 — a
+# number another commit already owns — and publishing it rolls the counter
+# backwards so the next allocation hands out 3 twice. The lease cannot catch it,
+# because nothing else moved.
+setup fi a
+I="$ROOT/fi/a"
+commit_in "$I" "one";   c1=$( cd "$I" && git rev-parse HEAD )
+try sh -c "cd '$I' && '$GBN' generate 2>/dev/null" >/dev/null
+commit_in "$I" "two";   try sh -c "cd '$I' && '$GBN' generate 2>/dev/null" >/dev/null
+commit_in "$I" "three"; try sh -c "cd '$I' && '$GBN' generate 2>/dev/null" >/dev/null
+
+( cd "$I" && git checkout -q "$c1" )
+bumped=$( try sh -c "cd '$I' && '$GBN' force-incr 2>/dev/null" | tail -1 )
+counter=$( cd "$I" && git cat-file blob refs/buildnumbers/last 2>/dev/null || echo "" )
+
+if [ "$bumped" = "4" ]; then
+  ok "force-incr on an older commit took 4, past the counter"
+else
+  bad "force-incr returned $(printf '%q' "$bumped"), expected 4" \
+      "it counted from HEAD's note and reused a number another commit owns"
+fi
+if [ "$counter" = "4" ]; then
+  ok "the shared counter moved forward (now $counter)"
+else
+  bad "counter is $(printf '%q' "$counter"), expected 4" "the counter was rolled backwards"
+fi
+
+# ------------------------------------- a local ref the remote does not have
+
+note "A ref present locally but absent on the remote still publishes"
+
+# The lease is a claim about the remote. Taking it from the local refs after a
+# fetch looks equivalent, but a fetch only updates refs the remote actually has
+# — so a local-only ref makes the lease claim a value the remote never held, the
+# push dies "stale info", and the retry then returns the note it just wrote.
+# Exit 0, a number on stdout, nothing published.
+setup orphanref a
+J="$ROOT/orphanref/a"
+commit_in "$J" "first"
+try sh -c "cd '$J' && '$GBN' generate 2>/dev/null" >/dev/null
+# The remote loses the allocation refs; the clone keeps them.
+( cd "$ROOT/orphanref" && git --git-dir=origin.git update-ref -d refs/buildnumbers/last 2>/dev/null || true
+  git --git-dir=origin.git update-ref -d refs/buildnumbers/commits 2>/dev/null || true
+  git --git-dir=origin.git update-ref -d refs/notes/buildnumbers 2>/dev/null || true )
+commit_in "$J" "second"
+n2=$( try sh -c "cd '$J' && '$GBN' generate 2>/dev/null" )
+onremote=$( cd "$ROOT/orphanref" && git --git-dir=origin.git cat-file blob refs/buildnumbers/last 2>/dev/null || echo "" )
+
+if [ -n "$n2" ] && [ "$onremote" = "$n2" ]; then
+  ok "the allocation reached the remote (n=$n2)"
+else
+  bad "reported ${n2:-<none>}, remote has ${onremote:-<nothing>}" \
+      "a number was reported that nothing else in the world has"
+fi
+
 # --------------------------------------------------------------------- report
 
 printf '\n%s passed, %s failed\n' "$pass" "$fail"

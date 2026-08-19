@@ -307,19 +307,18 @@ function _fetch {
     # Recorded immediately after the fetch, while the local refs still mirror the
     # remote — this is the value the push will lease against. Anything written
     # between here and the push is precisely what the lease must protect.
-    OBSERVED_LAST=$(git show-ref -s ${REFS_LAST} || true)
-    OBSERVED_COMMITS=$(git show-ref -s ${REFS_COMMITS} || true)
-    OBSERVED_NOTES=$(git show-ref -s ${REFS_NOTES} || true)
-    # **A lease is a claim about the remote being pushed to.** When fetch and
-    # push are different remotes — which GIT_FETCH_REMOTE and GIT_PUSH_REMOTE
-    # exist to allow — the values just read describe the wrong one, and every
-    # push would be refused as "stale info" against a mirror that is perfectly
-    # in sync. Observe the push remote directly in that case.
-    if test "${GIT_PUSH_REMOTE}" != "${GIT_FETCH_REMOTE}" ; then
-        OBSERVED_LAST=$(_remote_ref "${REFS_LAST}")
-        OBSERVED_COMMITS=$(_remote_ref "${REFS_COMMITS}")
-        OBSERVED_NOTES=$(_remote_ref "${REFS_NOTES}")
-    fi
+    # **A lease is a claim about the remote, so it is read from the remote.**
+    # Reading the local refs after a fetch looks equivalent and is not: a fetch
+    # only updates refs the remote actually has, so a ref that exists locally
+    # and not remotely — a remote that moved, an earlier run against a different
+    # GIT_REMOTE, residue from a failed run — leaves the local value in place
+    # and the lease then claims something the remote never held. Every push then
+    # dies "stale info", the retry re-fetches (a no-op, since the remote has
+    # nothing to overwrite it with), finds the note it just wrote, and returns
+    # it: exit 0, a number on stdout, and nothing published.
+    OBSERVED_LAST=$(_remote_ref "${REFS_LAST}")
+    OBSERVED_COMMITS=$(_remote_ref "${REFS_COMMITS}")
+    OBSERVED_NOTES=$(_remote_ref "${REFS_NOTES}")
     FETCHED=1
     _logt -bare DONE
 }
@@ -332,6 +331,22 @@ function _remote_ref {
 # `--force-with-lease=<ref>:<value>` for every ref we saw a value for. A ref that
 # did not exist at fetch time gets no lease: there is nothing to compare against,
 # and its creation is the first-run case rather than a conflict.
+# Puts the local refs back to what the remote had, discarding a write that was
+# never published.
+function _restore_observed {
+    _restore_one "${REFS_LAST}" "${OBSERVED_LAST}"
+    _restore_one "${REFS_COMMITS}" "${OBSERVED_COMMITS}"
+    _restore_one "${REFS_NOTES}" "${OBSERVED_NOTES}"
+}
+
+function _restore_one {
+    if test -n "$2" ; then
+        git update-ref "$1" "$2"
+    else
+        git update-ref -d "$1" 2>/dev/null || true
+    fi
+}
+
 function _lease_args {
     if test -n "${OBSERVED_LAST}" ; then
         printf ' --force-with-lease=%s:%s' "${REFS_LAST}" "${OBSERVED_LAST}"
@@ -385,7 +400,15 @@ function _force_incr {
     # every push here — burning a number per attempt and returning a higher one
     # than asked for. Re-observe before writing.
     _fetch
-    next_buildnumber=$(( $buildnumber + 1 ))
+    # **The next number comes from the counter, never from HEAD's own note.**
+    # Those differ whenever anything else has allocated since: with HEAD on 1
+    # and the counter on 3, counting from the note yields 2 — a number another
+    # commit already owns — and pushing it rolls the shared counter backwards,
+    # so the following allocation hands out 3 a second time. The lease does not
+    # catch it, because nothing else moved.
+    lastbuildnumber=`git cat-file blob ${REFS_LAST} 2>/dev/null` || lastbuildnumber=${buildnumber}
+    test "${lastbuildnumber}" -ge "${buildnumber}" || lastbuildnumber=${buildnumber}
+    next_buildnumber=$(( $lastbuildnumber + 1 ))
     _write_buildnumber $next_buildnumber "force increment"
     _push nofail || {
         # Unbounded before: each pass incremented again, so a remote that kept
@@ -433,8 +456,13 @@ function _generate_or_get {
     _write_buildnumber $buildnumber "increment"
 
     _push nofail || {
-        test "${attempt}" -lt "${MAX_ATTEMPTS}" || \
+        test "${attempt}" -lt "${MAX_ATTEMPTS}" || {
+            # Leaving the unpublished write behind means the next run finds its
+            # own note on attempt 1, returns it without fetching or pushing, and
+            # reports a number nothing else in the world has.
+            _restore_observed
             fail "Could not publish a build number after ${MAX_ATTEMPTS} attempts. Another job may be allocating continuously, or the remote is rejecting writes."
+        }
         _logi "Another allocation won the race; refetching and taking the next number."
         _generate_or_get $(( attempt + 1 ))
         return 0
