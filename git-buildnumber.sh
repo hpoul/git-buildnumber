@@ -35,7 +35,34 @@ REFS_NOTES=refs/notes/buildnumbers
 # Kept as a glob rather than the exact ref because a plain refspec is fatal when
 # the ref does not exist yet: "couldn't find remote ref" on fetch, "src refspec
 # does not match any" on push. That is every first run.
-REFSPEC="+${REFS_BASE}/*:${REFS_BASE}/* +${REFS_NOTES}*:${REFS_NOTES}*"
+#
+# **Fetch and push need different refspecs, and sharing one is what made the
+# retry below unreachable.** The leading `+` is per-ref `--force`. On the fetch
+# that is wanted: the remote is the authority, and a local ref that has drifted
+# should be overwritten. On the push it means a diverged remote is *overwritten
+# rather than refused*, so `git push` cannot fail, so the `_push nofail ||`
+# recovery paths could never run. Two clones allocating the same number would
+# both "succeed", and the second would erase the first's note.
+#
+# Note `--force-with-lease` alone does not fix it: a `+` on the refspec
+# overrides the lease. Measured — with `+`, a push carrying a stale lease value
+# still reports "(forced update)".
+FETCH_REFSPEC="+${REFS_BASE}/*:${REFS_BASE}/* +${REFS_NOTES}*:${REFS_NOTES}*"
+PUSH_REFSPEC="${REFS_BASE}/*:${REFS_BASE}/* ${REFS_NOTES}*:${REFS_NOTES}*"
+
+# What the last fetch saw, per ref, so the push can compare-and-swap against it.
+# Fast-forward is not available here: ${REFS_LAST} points at a *blob*, which has
+# no ancestry, so every update of it is a non-fast-forward and a plain push would
+# refuse even a healthy single-machine run. A lease is the check that works.
+OBSERVED_LAST=""
+OBSERVED_COMMITS=""
+OBSERVED_NOTES=""
+# Whether _fetch has run in this process. Separate from the values above,
+# because "no value observed" is the legitimate first-run state — the refs do
+# not exist on the remote yet — and is indistinguishable from "never looked" if
+# the values alone are consulted. Getting that wrong makes the push lease
+# against what this process just wrote, which every remote then fails.
+FETCHED=0
 
 CMD_NOTES="git notes --ref=${REFS_NOTES}"
 
@@ -116,7 +143,11 @@ function force_buildnumber {
 
 function log {
     # tail `git rev-parse --git-dir`/logs/${REFS_LAST}
-    _git_log ${REFS_COMMITS}
+    #
+    # --first-parent because each entry now carries the built commit as a second
+    # parent (see _write_buildnumber). Without it this walks the project's whole
+    # history instead of the allocation log.
+    _git_log --first-parent ${REFS_COMMITS}
 }
 
 function _git_log {
@@ -210,6 +241,15 @@ function _write_buildnumber {
     buildnumberfilename="b${buildnumber}"
     commitshash=`git show-ref -s $REFS_COMMITS || :`
     parent=""
+    # **The chain needs a root of its own, so the built commit is always the
+    # *second* parent.** Without one, the first allocation in a repository has no
+    # previous entry, `-p HEAD` lands in first position, and `git log
+    # --first-parent` then walks out of the allocation log and into the project's
+    # history. An empty parentless commit costs nothing and keeps the invariant
+    # true from the first entry onwards.
+    if test -z "$commitshash" ; then
+        commitshash=`git commit-tree $(git mktree </dev/null) -m "buildnumbers: start of the allocation log"`
+    fi
     _logt "commitshash: $commitshash\n\n"
     if test -n "$commitshash" ; then
         parent="-p $commitshash"
@@ -230,7 +270,18 @@ function _write_buildnumber {
     _logt "Creating tree at $treefile"
     echo -e "100644 blob ${buildnumberfilehash}\t${buildnumberfilename}" >> $treefile
     treehash=`cat "$treefile" | git mktree`
-    newcommitshash=`git commit-tree $parent $treehash -m "${message}"`
+    # **The built commit is a parent, not just a filename in the tree.** Without
+    # this the SHA is recorded as blob *content*, which is a lookup and not a
+    # reference: nothing in the object graph points at the commit, so `git gc`
+    # collects it as soon as the last branch containing it goes away — and the
+    # note still resolves afterwards, answering with a SHA that no longer exists.
+    #
+    # As a parent it survives gc, and pushing this ref carries its objects to the
+    # remote, so another machine can still resolve the build number later.
+    #
+    # It is the *second* parent so `git log --first-parent` still walks only the
+    # allocation history; see `log` below.
+    newcommitshash=`git commit-tree $parent -p HEAD $treehash -m "${message}"`
     git update-ref -m "${message}" --create-reflog ${REFS_COMMITS} ${newcommitshash}
 
     rm $treefile $buildnumberfile
@@ -239,14 +290,53 @@ function _write_buildnumber {
 
 function _fetch {
     _logt -n "Fetching from ${GIT_FETCH_REMOTE} ...    "
-    git fetch -q ${GIT_FETCH_REMOTE} ${REFSPEC}
+    # **`--depth=1` only when the clone is already shallow.** Each chain entry
+    # now has the built commit as a parent, so the ref's fetch closure is the
+    # union of every built commit's ancestry — measured at 2364 KB against 20 KB
+    # for a 30-commit repository, paid by every fresh CI runner on every
+    # allocation. Depth-limiting the chain avoids that, and appending to a
+    # shallow chain still works because the remote already has both parents.
+    #
+    # Never unconditionally: passing --depth to a full clone would introduce a
+    # shallow boundary into a repository that did not have one.
+    if git rev-parse --is-shallow-repository 2>/dev/null | grep -q true ; then
+        git fetch -q --depth=1 ${GIT_FETCH_REMOTE} ${FETCH_REFSPEC}
+    else
+        git fetch -q ${GIT_FETCH_REMOTE} ${FETCH_REFSPEC}
+    fi
+    # Recorded immediately after the fetch, while the local refs still mirror the
+    # remote — this is the value the push will lease against. Anything written
+    # between here and the push is precisely what the lease must protect.
+    OBSERVED_LAST=$(git show-ref -s ${REFS_LAST} || true)
+    OBSERVED_COMMITS=$(git show-ref -s ${REFS_COMMITS} || true)
+    OBSERVED_NOTES=$(git show-ref -s ${REFS_NOTES} || true)
+    FETCHED=1
     _logt -bare DONE
+}
+
+# `--force-with-lease=<ref>:<value>` for every ref we saw a value for. A ref that
+# did not exist at fetch time gets no lease: there is nothing to compare against,
+# and its creation is the first-run case rather than a conflict.
+function _lease_args {
+    if test -n "${OBSERVED_LAST}" ; then
+        printf ' --force-with-lease=%s:%s' "${REFS_LAST}" "${OBSERVED_LAST}"
+    fi
+    if test -n "${OBSERVED_COMMITS}" ; then
+        printf ' --force-with-lease=%s:%s' "${REFS_COMMITS}" "${OBSERVED_COMMITS}"
+    fi
+    if test -n "${OBSERVED_NOTES}" ; then
+        printf ' --force-with-lease=%s:%s' "${REFS_NOTES}" "${OBSERVED_NOTES}"
+    fi
 }
 
 function _push {
     _logt -n "Pushing to ${GIT_PUSH_REMOTE} ...    "
     #sleep 3
-    git push -q ${GIT_PUSH_REMOTE} ${REFSPEC} || {
+    # A push with no preceding fetch has nothing to lease against, and pushing
+    # blind is what this function exists to stop. `push` and `sync` reach here
+    # directly, so the fetch is ensured rather than assumed.
+    test "${FETCHED}" -eq 1 || _fetch
+    git push -q ${GIT_PUSH_REMOTE} $(_lease_args) ${PUSH_REFSPEC} || {
         _logt -bare ERROR
         # ${1:-} because `set -u` is on and _push is called with no argument
         # from push, sync and force_buildnumber — where a failing push died with
@@ -262,14 +352,19 @@ function _push {
 }
 
 function _force_incr {
+    local attempt=${1:-1}
     _fetch
     _assert_clean_repository
     buildnumber=$( _generate_or_get )
     next_buildnumber=$(( $buildnumber + 1 ))
     _write_buildnumber $next_buildnumber "force increment"
     _push nofail || {
-        _logt "Retrying..."
-        _force_incr
+        # Unbounded before: each pass incremented again, so a remote that kept
+        # refusing burned a number per attempt and never stopped.
+        test "${attempt}" -lt "${MAX_ATTEMPTS}" || \
+            fail "Could not force-increment after ${MAX_ATTEMPTS} attempts."
+        _logi "Another allocation won the race; refetching."
+        _force_incr $(( attempt + 1 ))
         return 0
     }
     echo $next_buildnumber
@@ -280,16 +375,26 @@ function _assert_clean_repository {
         git diff-index --quiet ${DIFF_INDEX_ARGS} HEAD || fail "Requires a clean repository state, without uncommitted changes."
 }
 
+MAX_ATTEMPTS=${MAX_ATTEMPTS:-10}
+
 function _generate_or_get {
+    local attempt=${1:-1}
     _assert_clean_repository
 
-    buildnumber=$(_get_existing_buildnumber) && echo $buildnumber && return 0
+    # **Only the first attempt may trust a local note.** On a retry the local
+    # note is the one we just wrote for the number that lost the race, and
+    # returning it hands back a number another commit already owns — which was
+    # the whole failure this retry exists to recover from. The fetch below
+    # force-updates the notes ref from the remote, which discards that write.
+    if test "${attempt}" -eq 1 ; then
+        buildnumber=$(_get_existing_buildnumber) && echo $buildnumber && return 0
+    fi
 
     _fetch
 
     buildnumber=$(_get_existing_buildnumber) && echo $buildnumber && return 0
 
-    lastbuildnumber=`git cat-file blob ${REFS_LAST} 2>&1` || {
+    lastbuildnumber=`git cat-file blob ${REFS_LAST} 2>/dev/null` || {
         lastbuildnumber=0
         _logi "No buildnumber yet, starting one now."
     }
@@ -299,8 +404,10 @@ function _generate_or_get {
     _write_buildnumber $buildnumber "increment"
 
     _push nofail || {
-        _logt "Retrying..."
-        _generate_or_get
+        test "${attempt}" -lt "${MAX_ATTEMPTS}" || \
+            fail "Could not publish a build number after ${MAX_ATTEMPTS} attempts. Another job may be allocating continuously, or the remote is rejecting writes."
+        _logi "Another allocation won the race; refetching and taking the next number."
+        _generate_or_get $(( attempt + 1 ))
         return 0
     }
 
