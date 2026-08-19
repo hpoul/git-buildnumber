@@ -8,10 +8,17 @@
 # a reimplementation of it, and asserts on what ended up on the *remote* — which
 # is the only place a lost allocation is visible.
 #
-# The concurrency cases are deterministic rather than timing-based. A genuine
-# race is reproducible only by luck; what matters is the state a race produces,
-# and that state can be constructed exactly: one clone allocates and pushes
-# while a second clone still holds pre-fetch refs, then the second pushes.
+# The concurrency case is timing-based, and honestly so: the window it needs is
+# between fetching and pushing, and `generate` fetches immediately before
+# allocating — so a sequenced version does NOT reproduce the race, it just
+# watches the second run read the first's push and take the next number. An
+# earlier draft of this file did exactly that and passed against the unfixed
+# script.
+#
+# The consequence is that this case fails *open*: if the two runs serialize on a
+# loaded machine it passes without having raced. It is run repeatedly to narrow
+# that, and the lease itself is covered deterministically by the split-remote and
+# force-incr cases, which do not depend on timing.
 
 set -euo pipefail
 
@@ -38,7 +45,7 @@ setup() {
     git -C "$name" config user.name Test
   done
   # One shared commit so the clones are not empty.
-  cd "$dir/$1x" 2>/dev/null || cd "$dir/$(echo "$@" | cut -d' ' -f1)"
+  cd "$dir/$1"
   echo seed > seed.txt
   git add seed.txt
   git commit -qm seed
@@ -54,9 +61,12 @@ commit_in() { # commit_in <clone> <text>
   ( cd "$1" && echo "$2" > file.txt && git add file.txt && git commit -qm "$2" )
 }
 
-remote_note_count() { # how many commits carry a buildnumbers note ON ORIGIN
-  local dir="$1" n=0
-  (
+# How many commits carry a buildnumbers note ON ORIGIN. Always prints a number:
+# an empty string here would read as "0 notes" in a diagnostic while actually
+# meaning "the check itself broke".
+remote_note_count() {
+  local dir="$1" out
+  out=$(
     set +e
     cd "$dir" || exit 0
     rm -rf inspect
@@ -64,8 +74,15 @@ remote_note_count() { # how many commits carry a buildnumbers note ON ORIGIN
     cd inspect || exit 0
     git fetch -q origin '+refs/notes/buildnumbers:refs/notes/buildnumbers' >/dev/null 2>&1
     git notes --ref=buildnumbers list 2>/dev/null | wc -l | tr -d ' '
-  ) || n=0
+  ) || out=""
+  printf '%s' "${out:-0}"
 }
+
+# Run something that is allowed to fail, capturing stdout. Without this, a
+# non-zero exit inside a command substitution aborts the whole suite under
+# `set -e` — so a regression would look like a crashed harness rather than a
+# failed assertion.
+try() { ( set +e; "$@" ) || true; }
 
 # ---------------------------------------------------------------- concurrency
 
@@ -74,29 +91,40 @@ note "Two clones allocating at the same moment"
 # The window between fetching and pushing is small and real; the only honest way
 # to enter it is to run both at once. Whoever loses must refetch and take the
 # next number rather than returning the one it lost with.
-setup race a b
-RA="$ROOT/race/a"; RB="$ROOT/race/b"
-commit_in "$RA" "from a"
-commit_in "$RB" "from b"
+race_round=0
+race_bad=""
+while [ "$race_round" -lt 3 ]; do
+  race_round=$((race_round + 1))
+  setup "race$race_round" a b
+  RA="$ROOT/race$race_round/a"; RB="$ROOT/race$race_round/b"
+  commit_in "$RA" "from a"
+  commit_in "$RB" "from b"
 
-( cd "$RA" && "$GBN" generate >"$ROOT/race/a.out" 2>/dev/null ) &
-( cd "$RB" && "$GBN" generate >"$ROOT/race/b.out" 2>/dev/null ) &
-wait
+  # `wait` reports a background job's non-zero exit, which would abort the suite
+  # under `set -e` before anything could be reported. The failure must land in an
+  # assertion, not in the harness.
+  ( cd "$RA" && "$GBN" generate >"$ROOT/race$race_round/a.out" 2>/dev/null ) &
+  ( cd "$RB" && "$GBN" generate >"$ROOT/race$race_round/b.out" 2>/dev/null ) &
+  wait || true
 
-ra=$(tr -d '[:space:]' < "$ROOT/race/a.out" 2>/dev/null || true)
-rb=$(tr -d '[:space:]' < "$ROOT/race/b.out" 2>/dev/null || true)
+  ra=$(tr -d '[:space:]' < "$ROOT/race$race_round/a.out" 2>/dev/null || true)
+  rb=$(tr -d '[:space:]' < "$ROOT/race$race_round/b.out" 2>/dev/null || true)
+  count=$(remote_note_count "$ROOT/race$race_round")
 
-if [ -n "$ra" ] && [ -n "$rb" ] && [ "$ra" != "$rb" ]; then
-  ok "the two allocations differ (a=$ra b=$rb)"
+  if [ -z "$ra" ] || [ -z "$rb" ] || [ "$ra" = "$rb" ]; then
+    race_bad="round $race_round: a=${ra:-<none>} b=${rb:-<none>}"
+    break
+  fi
+  if [ "$count" != "2" ]; then
+    race_bad="round $race_round: origin carries $count note(s), expected 2"
+    break
+  fi
+done
+
+if [ -z "$race_bad" ]; then
+  ok "3 rounds: allocations differ and both notes survive each time"
 else
-  bad "a=${ra:-<none>} b=${rb:-<none>}" "two artifacts would carry one build number"
-fi
-
-count=$(remote_note_count "$ROOT/race")
-if [ "$count" = "2" ]; then
-  ok "both notes survive on the remote"
-else
-  bad "origin carries $count note(s), expected 2" "one allocation was erased on the remote"
+  bad "$race_bad" "two artifacts would carry one build number, or one was erased"
 fi
 
 # --------------------------------------------------------------- stdout shape
@@ -106,7 +134,7 @@ note "generate's stdout is consumed as a value"
 setup out a
 C="$ROOT/out/a"
 commit_in "$C" "a change"
-raw=$( cd "$C" && "$GBN" generate 2>/dev/null )
+raw=$( try sh -c "cd '$C' && '$GBN' generate 2>/dev/null" )
 if printf '%s' "$raw" | grep -qE '^[0-9]+$'; then
   ok "stdout is a bare integer"
 else
@@ -161,6 +189,92 @@ if [ "$entries" = "4" ]; then
 else
   bad "log shows $entries commits, expected 4" \
       "a first-parent walk is reaching into the project's history"
+fi
+
+# ------------------------------------------------------ separate fetch/push remotes
+
+note "GIT_FETCH_REMOTE and GIT_PUSH_REMOTE may differ"
+
+# A lease is a claim about the remote being pushed to. Observing the fetch remote
+# and asserting it against the push remote refuses every push to a mirror that is
+# perfectly in sync — deterministic, and it does not depend on any race.
+setup split a
+F="$ROOT/split/a"
+git init -q --bare "$ROOT/split/mirror.git"
+( cd "$F" && git remote add mirror "$ROOT/split/mirror.git" )
+
+# The two remotes have to hold *different* state, or the observation taken from
+# the wrong one happens to match and nothing is proven. So: allocate once and
+# copy that to the mirror, then let origin move on alone.
+commit_in "$F" "first change"
+try sh -c "cd '$F' && '$GBN' generate 2>/dev/null" >/dev/null
+( cd "$F" && git push -q mirror '+refs/buildnumbers/*:refs/buildnumbers/*' \
+    '+refs/notes/buildnumbers:refs/notes/buildnumbers' )
+commit_in "$F" "second change"
+try sh -c "cd '$F' && '$GBN' generate 2>/dev/null" >/dev/null   # origin only
+
+# origin is now two allocations ahead of the mirror. Pushing to the mirror must
+# lease against the mirror's values, not origin's.
+commit_in "$F" "third change"
+n=$( try sh -c "cd '$F' && GIT_PUSH_REMOTE=mirror '$GBN' generate 2>/dev/null" )
+
+if [ "$n" = "3" ]; then
+  ok "an allocation against a diverged push remote succeeds (n=$n)"
+else
+  bad "generate produced: $(printf '%q' "$n"), expected 3" \
+      "the lease was observed on the fetch remote and asserted against the push remote"
+fi
+
+# ------------------------------------------------------------------ force-incr
+
+note "force-incr takes the next number, not the one after it"
+
+# On a commit that ALREADY has a number, force-incr's inner lookup returns
+# without pushing, so stale observations never show. The failing case is a commit
+# with no number yet: the inner call allocates *and publishes*, which invalidates
+# what this process observed before it.
+setup incr a
+G="$ROOT/incr/a"
+commit_in "$G" "a change"
+bumped=$( try sh -c "cd '$G' && '$GBN' force-incr 2>/dev/null" | tail -1 )
+if [ "$bumped" = "2" ]; then
+  ok "force-incr on an unnumbered commit returned 2"
+else
+  bad "force-incr returned $(printf '%q' "$bumped"), expected 2" \
+      "its inner allocation published, so its own push leased against stale values"
+fi
+
+# --------------------------------------------------- chains from older versions
+
+note "A chain created before this change is still usable"
+
+setup old a
+H="$ROOT/old/a"
+commit_in "$H" "first"
+(
+  # Exactly what the previous version wrote: one entry, no root, no second
+  # parent, the built SHA only as blob content in a b<n> tree entry.
+  cd "$H"
+  blob=$(git rev-parse HEAD | git hash-object -w --stdin)
+  tree=$(printf '100644 blob %s\tb1\n' "$blob" | git mktree)
+  entry=$(git commit-tree "$tree" -m "buildnumber: 1 (increment)")
+  git update-ref refs/buildnumbers/commits "$entry"
+  printf '1\n' | git hash-object -w --stdin | xargs git update-ref refs/buildnumbers/last
+  git notes --ref=buildnumbers add -m 1 -f HEAD >/dev/null 2>&1
+  git push -q origin '+refs/buildnumbers/*:refs/buildnumbers/*' '+refs/notes/buildnumbers:refs/notes/buildnumbers'
+)
+commit_in "$H" "second"
+nextn=$( try sh -c "cd '$H' && '$GBN' generate 2>/dev/null" )
+logok=$( try sh -c "cd '$H' && '$GBN' log 2>/dev/null" | grep -c '^commit ' || true )
+if [ "$nextn" = "2" ]; then
+  ok "generate continues an old chain (n=$nextn)"
+else
+  bad "generate returned $(printf '%q' "$nextn"), expected 2" "an existing chain was not continued"
+fi
+if [ "$logok" -ge 2 ]; then
+  ok "log walks an old chain without error ($logok entries)"
+else
+  bad "log produced $logok entries" "the first-parent walk broke on a pre-existing chain"
 fi
 
 # --------------------------------------------------------------------- report

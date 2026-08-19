@@ -310,8 +310,23 @@ function _fetch {
     OBSERVED_LAST=$(git show-ref -s ${REFS_LAST} || true)
     OBSERVED_COMMITS=$(git show-ref -s ${REFS_COMMITS} || true)
     OBSERVED_NOTES=$(git show-ref -s ${REFS_NOTES} || true)
+    # **A lease is a claim about the remote being pushed to.** When fetch and
+    # push are different remotes — which GIT_FETCH_REMOTE and GIT_PUSH_REMOTE
+    # exist to allow — the values just read describe the wrong one, and every
+    # push would be refused as "stale info" against a mirror that is perfectly
+    # in sync. Observe the push remote directly in that case.
+    if test "${GIT_PUSH_REMOTE}" != "${GIT_FETCH_REMOTE}" ; then
+        OBSERVED_LAST=$(_remote_ref "${REFS_LAST}")
+        OBSERVED_COMMITS=$(_remote_ref "${REFS_COMMITS}")
+        OBSERVED_NOTES=$(_remote_ref "${REFS_NOTES}")
+    fi
     FETCHED=1
     _logt -bare DONE
+}
+
+# The push remote's current value for a ref, or empty when it has none.
+function _remote_ref {
+    git ls-remote "${GIT_PUSH_REMOTE}" "$1" 2>/dev/null | cut -f1 || true
 }
 
 # `--force-with-lease=<ref>:<value>` for every ref we saw a value for. A ref that
@@ -336,7 +351,10 @@ function _push {
     # blind is what this function exists to stop. `push` and `sync` reach here
     # directly, so the fetch is ensured rather than assumed.
     test "${FETCHED}" -eq 1 || _fetch
-    git push -q ${GIT_PUSH_REMOTE} $(_lease_args) ${PUSH_REFSPEC} || {
+    # --atomic so a rejected lease on one ref cannot leave the others landed.
+    # Without it a partial push publishes a counter without its note, or a note
+    # without its chain entry, and the retry then has to reason about halves.
+    git push -q --atomic ${GIT_PUSH_REMOTE} $(_lease_args) ${PUSH_REFSPEC} || {
         _logt -bare ERROR
         # ${1:-} because `set -u` is on and _push is called with no argument
         # from push, sync and force_buildnumber — where a failing push died with
@@ -356,6 +374,11 @@ function _force_incr {
     _fetch
     _assert_clean_repository
     buildnumber=$( _generate_or_get )
+    # **That ran in a subshell, and it fetched and pushed.** The observations
+    # this process holds are from before it, so leasing against them refuses
+    # every push here — burning a number per attempt and returning a higher one
+    # than asked for. Re-observe before writing.
+    _fetch
     next_buildnumber=$(( $buildnumber + 1 ))
     _write_buildnumber $next_buildnumber "force increment"
     _push nofail || {
